@@ -239,7 +239,7 @@ def _count_range(args):
     return pre_tokenize_chunk(chunk, special_tokens)
 
 def pretokenize_file(input_path, special_tokens, num_workers=None):
-    num_workers = num_workers or os.cpu_count() or 1
+    num_workers = num_workers or min(8, os.cpu_count() or 1)
     split_token = (special_tokens[0] if special_tokens else "<|endoftext|>").encode("utf-8")
 
     with open(input_path, "rb") as f:
@@ -247,7 +247,7 @@ def pretokenize_file(input_path, special_tokens, num_workers=None):
         file_size = f.tell()
         # Small files (the speed test): 1 chunk, no pool startup cost
         # Large files: ~4 chunks per worker for load balancing
-        num_chunks = 1 if file_size < (1 << 20) else num_workers * 4
+        num_chunks = 1 if file_size < (1 << 20) else num_workers * 32
         boundaries = find_chunk_boundaries(f, num_chunks, split_token)
 
     jobs = [(input_path, s, e, special_tokens) for s, e in zip(boundaries[:-1], boundaries[1:])]
@@ -278,6 +278,7 @@ def bpe_merges(total, vocab_size, special_tokens_bytes: list[bytes]):
 
     words = [tuple(bytes([b]) for b in w) for w in total]
     counts = list(total.values())
+    total.clear()
 
     pair_counts = defaultdict(int)
     pair_index = defaultdict(set)

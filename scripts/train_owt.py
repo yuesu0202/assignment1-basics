@@ -1,12 +1,13 @@
-# scripts/train_tinystories.py
+# scripts/train_owt.py
 import time, pickle, resource, cProfile, pstats
 from cs336_basics.train_bpe import pretokenize_file, bpe_merges   # adjust to your module path
 
-def main(path, vocab_size=10_000, special_tokens=("<|endoftext|>",), out="tinystories_bpe"):
+def main(path, vocab_size=32_000, special_tokens=("<|endoftext|>",), out="owt_bpe"):
     special_tokens = list(special_tokens)
     t0 = time.perf_counter()
     total = pretokenize_file(path, special_tokens)
     t1 = time.perf_counter()
+    print(f"pretokenize done: {len(total):,} unique pre-tokens in {t1-t0:.1f}s", flush=True)
     vocab, merges = bpe_merges(total, vocab_size, [t.encode() for t in special_tokens])
     t2 = time.perf_counter()
 
@@ -33,15 +34,15 @@ def main(path, vocab_size=10_000, special_tokens=("<|endoftext|>",), out="tinyst
 if __name__ == "__main__":
     import sys, os
     path = sys.argv[1]
-    out_dir = "tinystories_token"
-    os.makedirs(out_dir, exist_ok=True)                      # creates the folder if missing
-    name = os.path.basename(path).replace(".txt", "")        # e.g. TinyStoriesV2-GPT4-train
+    vocab_size = int(sys.argv[sys.argv.index("--vocab-size") + 1]) if "--vocab-size" in sys.argv else 32_000
+
+    out_dir = "owt_token"
+    os.makedirs(out_dir, exist_ok=True)
+    name = os.path.basename(path).replace(".txt", "")        # e.g. owt_train
     out = os.path.join(out_dir, f"{name}_bpe")
     if "--profile" in sys.argv:
         prof = os.path.join(out_dir, "bpe.prof")
-        cProfile.run("main(path, out=out)", prof)
+        cProfile.run("main(path, vocab_size=vocab_size, out=out)", prof)
         pstats.Stats(prof).sort_stats("cumtime").print_stats(15)
     else:
-        main(path, out=out)
-        
-        
+        main(path, vocab_size=vocab_size, out=out)
