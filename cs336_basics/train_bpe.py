@@ -1,5 +1,7 @@
 import os
-from typing import BinaryIO
+from typing import BinaryIO, Counter
+from collections import defaultdict, Counter
+from numpy import byte
 import regex as re
 
 def find_chunk_boundaries(
@@ -48,19 +50,87 @@ def find_chunk_boundaries(
     # Make sure all boundaries are unique, but might be fewer than desired_num_chunks
     return sorted(set(chunk_boundaries))
 
-def pre_tokenize_chunk(chunk: bytes, special_tokens: list[str]) -> list[str]:
-    """
-    Pre-tokenize a chunk of text.
-    """
-    PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
-    special_tokens_str = "|".join(re.escape(special_token) for special_token in special_tokens)
-    split_chunks = re.split(special_tokens_str, chunk.decode("utf-8"))
-    tokens = []
-    for split_chunk in split_chunks:
-        tokens.extend(re.findall(PAT, split_chunk))
-    tokens = list(set(tokens))
-    return tokens
+# def pre_tokenize_chunk(chunk: bytes, special_tokens: list[str]) -> dict[byte, int]:
+#     """
+#     Pre-tokenize a chunk of text.
+#     """
+#     special_tokens.sort(key = lambda x: len(x), reverse = True)
+#     PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+#     special_tokens_str = "|".join(re.escape(special_token) for special_token in special_tokens)
+#     split_chunks = re.split(special_tokens_str, chunk.decode("utf-8")) if special_tokens_str else list(chunk.decode("utf-8"))
+#     d = defaultdict(int)
+#     if len(split_chunks) == 1:
+#         token = (re.findall(PAT, str(split_chunks)))
+#         for item in token:
+#             d[item.encode("utf-8")] += 1
+#     else:
+#         for split_chunk in split_chunks:
+#             token = (re.findall(PAT, split_chunk))
+#             for item in token:
+#                 d[item.encode("utf-8")] += 1
+#     return d
 
+def pre_tokenize_chunk(chunk: bytes, special_tokens: list[str]) -> dict[bytes, int]:
+    """Pre-tokenize a chunk of text, never merging across special tokens."""
+    text = chunk.decode("utf-8")
+    PAT = re.compile(r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""")
+    if special_tokens:
+        # Longest first so overlapping tokens like "<|eot|><|eot|>" match greedily
+        toks = sorted(special_tokens, key=len, reverse=True)
+        split_pat = "|".join(re.escape(t) for t in toks)
+        segments = re.split(split_pat, text)
+    else:
+        segments = [text]          # whole text is one segment
+
+    d = defaultdict(int)
+    for seg in segments:
+        for m in PAT.finditer(seg):  # finditer avoids building a big list
+            d[m.group().encode("utf-8")] += 1
+    return d
+
+def merge_word(word: tuple[bytes, ...], pair: tuple[bytes, bytes], new_tok: bytes) -> tuple[bytes, ...]:
+    """Replace every non-overlapping occurrence of `pair`, scanning left to right."""
+    out, i = [], 0
+    while i < len(word):
+        if i < len(word) - 1 and word[i] == pair[0] and word[i + 1] == pair[1]:
+            out.append(new_tok)
+            i += 2
+        else:
+            out.append(word[i])
+            i += 1
+    return tuple(out)
+
+def bpe_merges(total: Counter, vocab_size: int, special_tokens_bytes: list[str]):
+    # Initial vocab: 256 single bytes + special tokens
+    vocab = {i: bytes([i]) for i in range(256)}
+    for tok in special_tokens_bytes:
+        vocab[len(vocab)] = tok
+
+    # b"caf\xc3\xa9" -> (b'c', b'a', b'f', b'\xc3', b'\xa9')
+    words = Counter({tuple(bytes([b]) for b in w): c for w, c in total.items()})
+    merges = []
+
+    while len(vocab) < vocab_size:
+        pair_counts = Counter()
+        for word, c in words.items():
+            for a, b in zip(word, word[1:]):
+                pair_counts[(a, b)] += c
+        if not pair_counts:
+            break  # nothing left to merge
+
+        # Highest count; ties broken by lexicographically greater pair
+        best = max(pair_counts, key=lambda p: (pair_counts[p], p))
+        new_tok = best[0] + best[1]
+        merges.append(best)
+        vocab[len(vocab)] = new_tok
+
+        new_words = Counter()
+        for word, c in words.items():
+            new_words[merge_word(word, best, new_tok)] += c
+        words = new_words
+
+    return vocab, merges
+   
 def train_bpe(
     input_path: str | os.PathLike,
     vocab_size: int,
@@ -96,9 +166,13 @@ def train_bpe(
     
     vocab = {}
     merges = []
+    total = Counter()
     for i in range(len(boundaries) - 1):
         start = boundaries[i]
         end = boundaries[i + 1]
         chunk = file.read(end - start)
-        
+        d = pre_tokenize_chunk(chunk, special_tokens)
+        total.update(pre_tokenize_chunk(chunk, special_tokens))
+    
+    
     return boundaries
